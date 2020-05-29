@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+
+NGROK_DOMAIN=${NGROK_DOMAIN:="ngrok.local"}
+
+echo "ngrok build and server setup utility"
+echo "------"
+
+DOCKER_VERSION=$(docker --version 2> /dev/stdout 1>/dev/null)
+if [ $? != 0 ]
+then
+  echo "Docker not found"
+  echo "Docker must be available on your path"
+  echo "Check that it is installed and on your path before trying again"
+  echo ""
+  echo "exiting"
+  exit 1
+fi
+
+echo "For this script to work as expected, you must edit your /etc/hosts file (or similar)"
+echo "to include the following record (or equivalent)"
+echo ""
+echo -e "\t127.0.0.1       $NGROK_DOMAIN"
+echo -e "\t127.0.0.1       test.$NGROK_DOMAIN"
+echo ""
+
+read -n 1 -p "Press any key if you are ready to continue, or C-c to cancel"
+echo ""
+echo ""
+
+# Prepare the self-signed SSL certificate that will be bound to the ngrok client and server executables
+mkdir -vp gateway/keys
+
+openssl genrsa -out gateway/keys/rootCA.key 2048
+openssl req -x509 -new -nodes -key gateway/keys/rootCA.key -subj "/CN=$NGROK_DOMAIN" -days 5000 -out gateway/keys/rootCA.pem
+openssl genrsa -out gateway/keys/device.key 2048
+openssl req -new -key gateway/keys/device.key -subj "/CN=$NGROK_DOMAIN" -out gateway/keys/device.csr
+openssl x509 -req -in gateway/keys/device.csr -CA gateway/keys/rootCA.pem -CAkey gateway/keys/rootCA.key -CAcreateserial -out gateway/keys/device.crt -days 5000
+
+########################################################
+## Prepare the Docker relay server and build environment
+
+GOARCH=${1:-"amd64"}
+GOOS=${2:-"linux"}
+
+# First, kill any running containers with the gateway tag
+for container in $(docker ps -a -q --filter="ancestor=$(docker images -q gateway)")
+do
+  (docker kill $container) 2> /dev/stdout 1>/dev/null |&grep "don't print errors to stdout"
+done
+
+# Perform the build and delete any existing images
+docker build --rm gateway/ -t gateway --build-arg GOOS=$GOOS --build-arg GOARCH=$GOARCH
+
+# The ngrok server requires three ports: one for HTTP connections, one for HTTPS, and another for client heartbeats
+DOCKER_ID=$(docker run -d -p 8000:8000 -p 8001:8001 -p 4443:4443 -t gateway)
+
+# Copy the newly built client binary from the server to the host
+docker cp $DOCKER_ID:/code/ngrok/bin/ $(pwd)
+
+echo -e "server_addr: $NGROK_DOMAIN:4443\ntrust_host_root_certs: false" > ngrok-config
+
+#####################################################################
+## Prepare the test service that we will be tunneling over the relay
+
+# First, kill any running containers with the gateway tag
+for container in $(docker ps -a -q --filter="ancestor=$(docker images -q ngrok-test-service)")
+do
+  (docker kill $container) 2> /dev/stdout 1>/dev/null |&grep "don't print errors to stdout"
+done
+
+# Build and run a test service
+docker build --rm test_service/ -t ngrok-test-service
+
+# Start the service
+SERVICE_DOCKER_ID=$(docker run -d -p 4000:4000 -t ngrok-test-service)
+
+# Done
+echo ""
+echo ""
+echo "##############################"
+echo "###### BUILD FINISHED ########"
+echo "##############################"
+echo ""
+echo "Client and server $GOOS-$GOARCH executables were written to $(pwd)/bin/"
+echo ""
+echo "You can now run the following command to tunnel the test service through the relay:"
+echo ""
+echo -e "\t$(pwd)/bin/ngrok -subdomain=test -config=ngrok-config 4000"
+echo ""
+echo ""
+echo "To create binaries for other architectures and platforms,"
+echo "run this script in the format."
+echo ""
+echo -e "\t./setup \$ARCH \$OS"
+echo ""
+echo -e "\033[0;33mAn ngrok relay test service is running inside Docker\033[0m"
+echo -e "  http://test.$NGROK_DOMAIN:\033[0;32m8000\033[0m (HTTP)"
+echo -e "  https://test.$NGROK_DOMAIN:\033[0;32m8001\033[0m (HTTPS)"
+echo -e "  http://127.0.0.1:\033[0;32m4443\033[0m (client health checks)"
+echo -e ""
+echo -e "  Relay Server Container ID \033[0;32m${DOCKER_ID:0:12}\033[0m"
+echo -e ""
+echo -e "\033[0;33mA test service is running inside Docker\033[0m"
+echo -e "  http://127.0.0.1:\033[0;32m4000\033[0m (test service)"
+echo -e ""
+echo -e "  Test Service Container ID \033[0;32m${SERVICE_DOCKER_ID:0:12}\033[0m"
+echo ""
