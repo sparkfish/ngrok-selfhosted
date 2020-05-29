@@ -6,7 +6,7 @@ This repository provides a script and outlines a procedure for building ngrok cl
 
 ngrok is a tool that tunnels requests from `localhost` over a public endpoint.
 
-It can be used to expose services oer the internet from behind a NAT or firewall.
+It can be used to expose services over the internet from behind a NAT or firewall.
 
 ngrok was open source through version 1.7 with source [available on GitHub](https://github.com/inconshreveable/ngrok). The current version (2.x) is closed-source.
 
